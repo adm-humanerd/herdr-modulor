@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.error
+.DS_Store
+mods/*/*.d.ts
+mods/*/jsconfig.json

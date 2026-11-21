@@ -1,0 +1,196 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [
+    14,
+    11
+  ],
+  "theme": "corbusier-light",
+  "background": "canvas",
+  "font": "Geist Mono",
+  "font_size": 13.5,
+  "ui_font": "Geist",
+  "terminal_line_height": 1.14,
+  "terminal_padding": [
+    10,
+    12
+  ],
+  "divider": {
+    "width": 1,
+    "color": "border"
+  },
+  "preview": "layouts/modulor-27.svg",
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "size": {
+        "px": 272
+      },
+      "min": 68,
+      "max": 440,
+      "background": "chrome",
+      "divider": {
+        "width": 1,
+        "color": "border"
+      },
+      "children": [
+        {
+          "id": "sidebar-queue",
+          "type": "block",
+          "size": {
+            "weight": 3
+          },
+          "min": 150,
+          "window_drag": true,
+          "content": {
+            "mod": "modulor-queue",
+            "props": {
+              "section": "queue"
+            }
+          }
+        },
+        {
+          "id": "sidebar-quota",
+          "type": "block",
+          "size": {
+            "weight": 5
+          },
+          "min": 210,
+          "content": {
+            "mod": "modulor-quota"
+          }
+        },
+        {
+          "id": "sidebar-spaces",
+          "type": "block",
+          "size": {
+            "px": 96
+          },
+          "min": 72,
+          "content": {
+            "mod": "modulor-queue",
+            "props": {
+              "section": "spaces"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "resizable": false,
+      "children": [
+        {
+          "id": "tabs",
+          "type": "block",
+          "size": {
+            "px": 36
+          },
+          "window_drag": true,
+          "content": {
+            "mod": "modulor-strip",
+            "props": {
+              "mode": "tabs"
+            }
+          }
+        },
+        {
+          "id": "work-body",
+          "type": "row",
+          "divider": {
+            "width": 1,
+            "color": "border"
+          },
+          "children": [
+            {
+              "id": "main",
+              "type": "block",
+              "padding": 6,
+              "background": "canvas",
+              "content": {
+                "tab": "active",
+                "pane": {
+                  "gap": 6,
+                  "radius": 0,
+                  "lone": true,
+                  "background": "background",
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "focus": {
+                    "width": 2,
+                    "color": "#191816"
+                  },
+                  "header": {
+                    "content": {
+                      "mod": "modulor-pane"
+                    },
+                    "height": 28,
+                    "position": "top",
+                    "reveal": "always"
+                  }
+                }
+              }
+            },
+            {
+              "id": "panel",
+              "type": "column",
+              "hidden": false,
+              "size": {
+                "px": 336
+              },
+              "min": 250,
+              "max": 540,
+              "background": "chrome",
+              "divider": {
+                "width": 1,
+                "color": "border"
+              },
+              "children": [
+                {
+                  "id": "deck-memory",
+                  "type": "block",
+                  "size": {
+                    "weight": 6
+                  },
+                  "min": 260,
+                  "content": {
+                    "mod": "modulor-memory",
+                    "props": {
+                      "inlineSlots": true
+                    }
+                  }
+                },
+                {
+                  "id": "deck-git",
+                  "type": "block",
+                  "size": {
+                    "weight": 3
+                  },
+                  "min": 160,
+                  "content": {
+                    "mod": "modulor-git"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "status",
+          "type": "block",
+          "size": {
+            "px": 28
+          },
+          "content": {
+            "mod": "modulor-bar"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "global": {
+    "cmd-shift-m": "layout.toggle:panel",
+    "cmd-shift-0": "layout.switch:modulor-27",
+    "cmd-shift-9": "layout.switch:modulor-13"
+  }
+}

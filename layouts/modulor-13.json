@@ -1,0 +1,57 @@
+{
+  "id": "root",
+  "type": "column",
+  "titlebar": "none",
+  "traffic_lights": [
+    14,
+    11
+  ],
+  "theme": "corbusier-light",
+  "background": "background",
+  "font": "Geist Mono",
+  "font_size": 13,
+  "ui_font": "Geist",
+  "terminal_line_height": 1.12,
+  "terminal_padding": [
+    8,
+    10
+  ],
+  "resizable": false,
+  "preview": "layouts/modulor-13.svg",
+  "children": [
+    {
+      "id": "strip",
+      "type": "block",
+      "size": {
+        "px": 38
+      },
+      "window_drag": true,
+      "content": {
+        "mod": "modulor-strip",
+        "props": {
+          "mode": "focus-strip"
+        }
+      }
+    },
+    {
+      "id": "viewport",
+      "type": "block",
+      "content": {
+        "agent": "focused"
+      }
+    },
+    {
+      "id": "status",
+      "type": "block",
+      "size": {
+        "px": 26
+      },
+      "content": {
+        "mod": "modulor-bar",
+        "props": {
+          "compact": true
+        }
+      }
+    }
+  ]
+}
