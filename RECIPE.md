@@ -66,6 +66,7 @@ Built on a zero-radius (`radius: 0`), `1px` architectural grid (`#CFC8B8` divide
 
 - **Light-mode pairing**: Always pair `"theme": "corbusier-light"` with `"appearance": "light"` in `settings.json` (`minimum_contrast: 4.2` recommended).
 - **Dot vs colon in `keys.json`**: Mod actions MUST use dot syntax (`"modulor-bar.blueprints"`), never colons.
+- **`window.paint_path` scope**: `paint_path(path, color)` lives on ambient global `window` (`globalThis.window.paint_path`), never on `cx.window` (`cx.window` is `undefined`). Always call `.size_full()` on the element returned by `paint_path`.
 - **`.tooltip(...)` requires `.id(...)` in GPUI**: Any `div()` / `h_flex()` / `v_flex()` attaching `.tooltip(...)` must first call `.id(...)`, otherwise `herdr-app check` rejects it.
 - **`.when()` callback convention**: `.when(cond, (el) => el.child(...))` passes the parent container; returning a child directly without `el.child(...)` replaces the parent element.
 - **`image()` root path**: `image(path)` resolves relative to `appHome()` (`~/.config/herdr-app`), so external `.png`/`.jpg` artifacts are staged into `.planche-thumbs/`.

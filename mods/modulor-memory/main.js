@@ -161,7 +161,8 @@ function computeGraphLayout(graph, width, height) {
   const tiers = [...tierMap.keys()].sort((a, b) => a - b);
   const nCols = tiers.length;
   const xFracByCol =
-    nCols === 1 ? [0.5] : nCols === 2 ? [0.22, 0.78] : nCols === 3 ? [0.17, 0.5, 0.83] : [0.13, 0.38, 0.63, 0.87];
+    nCols === 1 ? [0.5] : nCols === 2 ? [0.22, 0.78] : nCols === 3 ? [0.17, 0.5, 0.83] : [0.12, 0.37, 0.63, 0.88];
+  const maxBoxW = nCols >= 4 ? 76 : 98;
 
   const posMap = {};
   const laidNodes = [];
@@ -175,7 +176,7 @@ function computeGraphLayout(graph, width, height) {
       const yFrac =
         count === 1 ? 0.5 : 0.17 + (rowIdx * 0.66) / Math.max(1, count - 1);
       const lbl = String(node.label || node.id || "");
-      const boxW = Math.min(104, Math.max(56, Math.round(lbl.length * 5.8 + 16)));
+      const boxW = Math.min(maxBoxW, Math.max(48, Math.round(lbl.length * 5.2 + 12)));
       const cxPx = Math.round(colFrac * width);
       const cyPx = Math.round(yFrac * height);
       const leftPx = Math.max(4, Math.min(width - boxW - 4, Math.round(cxPx - boxW / 2)));
@@ -201,7 +202,46 @@ function computeGraphLayout(graph, width, height) {
     const a = posMap[e.src];
     const b = posMap[e.dst];
     if (!a || !b) continue;
-    laidEdges.push({ ...e, from: a, to: b });
+    let x1 = a.leftPx + a.boxW / 2;
+    let y1 = a.topPx + a.boxH / 2;
+    let x2 = b.leftPx + b.boxW / 2;
+    let y2 = b.topPx + b.boxH / 2;
+    let side = "v";
+    if (b.leftPx >= a.leftPx + a.boxW + 2) {
+      x1 = a.leftPx + a.boxW;
+      y1 = a.topPx + a.boxH / 2;
+      x2 = b.leftPx;
+      y2 = b.topPx + b.boxH / 2;
+      side = "right";
+    } else if (a.leftPx >= b.leftPx + b.boxW + 2) {
+      x1 = a.leftPx;
+      y1 = a.topPx + a.boxH / 2;
+      x2 = b.leftPx + b.boxW;
+      y2 = b.topPx + b.boxH / 2;
+      side = "left";
+    } else if (a.topPx + a.boxH < b.topPx) {
+      y1 = a.topPx + a.boxH;
+      y2 = b.topPx;
+      side = "down";
+    } else if (b.topPx + b.boxH < a.topPx) {
+      y1 = a.topPx;
+      y2 = b.topPx + b.boxH;
+      side = "up";
+    }
+    laidEdges.push({
+      ...e,
+      from: a,
+      to: b,
+      side,
+      x1Px: x1,
+      y1Px: y1,
+      x2Px: x2,
+      y2Px: y2,
+      x1Pct: `${((x1 / width) * 100).toFixed(2)}%`,
+      y1Pct: `${((y1 / height) * 100).toFixed(2)}%`,
+      x2Pct: `${((x2 / width) * 100).toFixed(2)}%`,
+      y2Pct: `${((y2 / height) * 100).toFixed(2)}%`,
+    });
   }
 
   return { nodes: laidNodes, edges: laidEdges };
@@ -256,7 +296,29 @@ export default class ModulorMemory extends View {
       return [t.chrome, t.foreground, t.border];
     };
 
-    const canPaint = Boolean(cx?.window?.paint_path);
+    const edgeColor = (e) => {
+      const rel = String(e.rel || "").toUpperCase();
+      if (rel === "WRITE" && e.active) return t.blocked;
+      if (rel === "EDIT" || rel === "WRITE") return t.working;
+      if (rel === "READ" || rel === "SKILL") return t.done;
+      return "#756F64";
+    };
+
+    const orthoSegments = (e, col, i) => {
+      const thick = e.active ? 1.5 : 1;
+      const mx = Math.round((e.x1Px + e.x2Px) / 2);
+      const sx = Math.round(e.x1Px);
+      const sy = Math.round(e.y1Px);
+      const tx = Math.round(e.x2Px);
+      const ty = Math.round(e.y2Px);
+      return [
+        div().id(`mm-go1-${i}`).absolute().left(Math.min(sx, mx)).top(sy).w(Math.max(1, Math.abs(mx - sx))).h(thick).bg(col),
+        div().id(`mm-gov-${i}`).absolute().left(mx).top(Math.min(sy, ty)).w(thick).h(Math.max(1, Math.abs(ty - sy))).bg(col),
+        div().id(`mm-go2-${i}`).absolute().left(Math.min(mx, tx)).top(ty).w(Math.max(1, Math.abs(tx - mx))).h(thick).bg(col),
+      ];
+    };
+
+    const canPaint = typeof globalThis.window?.paint_path === "function";
 
     return div()
       .id("mm-graph")
@@ -276,18 +338,33 @@ export default class ModulorMemory extends View {
       .when(canPaint, (el) =>
         el.children(
           edges.map((e, i) => {
-            const p = PathBuilder.stroke(e.active ? 1.8 : 1.1)
-              .move_to(e.from.cxPct, e.from.cyPct)
-              .line_to(e.to.cxPct, e.to.cyPct)
+            const p = PathBuilder.stroke(e.active ? 1.9 : 1.4)
+              .move_to(e.x1Pct, e.y1Pct)
+              .line_to(e.x2Pct, e.y2Pct)
               .build();
-            const col = e.active ? t.blocked : "#B5AEA0";
+            const col = edgeColor(e);
             return div()
               .id(`mm-ge-${i}`)
               .absolute()
               .inset(0)
               .size_full()
-              .child(cx.window.paint_path(p, col));
+              .child(globalThis.window.paint_path(p, col).size_full());
           }),
+        ),
+      )
+      .when(!canPaint, (el) =>
+        el.children(edges.flatMap((e, i) => orthoSegments(e, edgeColor(e), i))),
+      )
+      .children(
+        edges.map((e, i) =>
+          div()
+            .id(`mm-gpt-${i}`)
+            .absolute()
+            .left(Math.round(e.x2Px - 1.5))
+            .top(Math.round(e.y2Px - 1.5))
+            .w(3)
+            .h(3)
+            .bg(edgeColor(e)),
         ),
       )
       .children(
