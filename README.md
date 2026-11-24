@@ -16,7 +16,7 @@ Designed to orchestrate **3–6+ parallel coding agents** across projects, git w
 - **Project, Harness & Write-Collision Badges (`modulor-pane`, `modulor-queue`)**:
   - Every pane header displays its `[project]` repo chip, harness tag (`CLAUDE`, `CODEX`, `AGY`, …), `MEM n` activity badge, and a pulsing **`CONFLICT`** warning whenever two agents concurrently edit the same file or non-worktree checkout.
 - **Quota Burn Rate & Sparklines (`modulor-quota`, `modulor-bar`)**:
-  - Logs rolling quota history to `~/.cache/herdr-modulor/quota-history.jsonl` and computes linear-regression burn rate (`-%/h`), exhaustion ETA (`0% in 1h31m` or `>reset`), and a 16-bar sparkline per bucket.
+  - Logs rolling quota history to `~/.cache/herdr-modulor/quota-history.jsonl`, computes OLS burn rate (`-%/h`), projects exhaustion countdown (`0% in <time>` or `>reset`), and renders a 16-bar reset-cycle sparkline with hover explanations.
 - **Subagent & Swarm Tree (`modulor-swarm`)**:
   - Dedicated right-column deck combining `invoke_subagent`/`swarm` transcript spawns with live Herdr child terminals (`terminal.peek`).
 - **Incremental Token & API-Equivalent Ledger (`modulor-cost`, `Cmd+Alt+C`)**:
@@ -25,6 +25,18 @@ Designed to orchestrate **3–6+ parallel coding agents** across projects, git w
   - Persistent draggable window using `watchFolder` + `tail` to highlight errors/warnings and notify on new failures.
 - **Smart Alerts & Dynamic Window Title (`modulor-bar`)**:
   - Non-duplicating operational alerts for quota thresholds (`≤35%` / `≤15%`), quota refills, context (`≥80%` / `≥90%`), and stale probe (`>60s`), plus live summary in the OS window title (`MODULOR · REV · G5H % · space`).
+
+## Quota Burn Forecast & Sparkline Guide
+
+Each quota bucket (`GEMINI 5H`, `GEMINI WK`, `3P 5H`, `3P WK`) pairs an OLS linear-regression burn-rate forecast underneath the progress bar with a 16-bar sparkline on the right (hover any bucket row in `Quota & Token Load` or the `Cmd+Alt+Q` ledger for live explanation):
+
+| Indicator | Meaning & Math |
+| --- | --- |
+| `collecting trend…` | Fewer than 2 samples `≥ 60s` apart in the current reset cycle (logged in `~/.cache/herdr-modulor/quota-history.jsonl`). |
+| `stable · 0%/h` | Rolling drain rate is `< 0.05%/h` over the regression window (`90m` for `5H` buckets, `24h` for `WK` weekly buckets). |
+| `-X.X%/h · >reset` (`outlasts reset`) | At the current burn pace, remaining quota stays above `0%` until the bucket resets. |
+| `-X.X%/h · 0% in <time>` | Projected time remaining until quota hits `0%` before reset (e.g., `0% in 1h31m`, `0% in 4d4h`). Turns Vermilion red (`#B83221`) on `5H` buckets whenever projected to hit `0%` before reset, and on `WK` weekly buckets when `0%` ETA is `≤ 36h`. |
+| **16-bar sparkline** (right) | Up to 16 chronological remaining-`%` samples (`0–100%` bar height) within the current reset cycle; automatically resets on window refill (`reset_time` change or `+10%` jump). |
 
 ## Quick Install
 

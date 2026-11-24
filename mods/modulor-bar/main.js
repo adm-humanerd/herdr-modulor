@@ -112,6 +112,28 @@ function fmtForecast(bv, bk) {
   return [`-${burn.toFixed(1)}%/h · outlasts reset`, false];
 }
 
+function fmtForecastTip(bv, bk) {
+  const isWeekly = String(bk || "").includes("weekly");
+  const win = isWeekly ? "24h OLS regression" : "90m OLS regression";
+  const resetStr = fmtLeft(bv?.reset_in_sec);
+  const sp = bv?.spark;
+  const burn = bv?.burn_pct_per_h;
+  const tail = "Sparkline (right): up to 16 chronological remaining-% samples in this reset cycle.";
+  if (typeof burn !== "number" || !Array.isArray(sp) || sp.length < 2) {
+    return `Collecting quota trend (${win}) — needs >=2 samples >=60s apart in the current cycle. Resets in ${resetStr}. ${tail}`;
+  }
+  if (burn < 0.05) {
+    return `Stable (<0.05%/h over ${win}). Projected to last until reset (${resetStr}). ${tail}`;
+  }
+  if (bv.exhausts_before_reset && typeof bv.eta_empty_sec === "number") {
+    const warnNote = isWeekly
+      ? " Weekly rows turn red only when 0% ETA <= 36h."
+      : " Highlighted red when projected to hit 0% before reset.";
+    return `Exhaustion forecast (${win}): burning ${burn.toFixed(1)}%/h, hits 0% in ${fmtLeft(bv.eta_empty_sec)} (before reset in ${resetStr}).${warnNote} ${tail}`;
+  }
+  return `Burn pace (${win}): -${burn.toFixed(1)}%/h — projected to stay above 0% until reset in ${resetStr}. ${tail}`;
+}
+
 function sparkBars(spark, col, t) {
   const arr = Array.isArray(spark) ? spark : [];
   if (arr.length < 2) return null;
@@ -461,7 +483,9 @@ export default class ModulorBar extends View {
                           const [fcText, fcWarn] = fmtForecast(bv, bk);
                           const spEl = sparkBars(bv.spark, col, t);
                           return v_flex()
+                            .id(`qb-bkt-${ai}-${bk}`)
                             .gap(3)
+                            .tooltip(fmtForecastTip(bv, bk))
                             .child(
                               h_flex()
                                 .justify_between()
@@ -633,7 +657,7 @@ export default class ModulorBar extends View {
           .px(4)
           .h(22)
           .hover((s) => s.bg(t.hover))
-          .tooltip("Click for full multi-account Antigravity quota ledger")
+          .tooltip("Click to inspect multi-account quota burn rate & 0% exhaustion forecast (Cmd+Alt+Q)")
           .on_click(() =>
             openOverlay({
               mod: "modulor-bar",
