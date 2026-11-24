@@ -14,9 +14,14 @@ HOME = Path.home()
 AGY_HOME = HOME / ".gemini" / "antigravity-cli"
 CACHE_DIR = HOME / ".cache" / "herdr-modulor"
 CTX_CACHE_FILE = CACHE_DIR / "ctx-cache.json"
+QUOTA_HIST_FILE = CACHE_DIR / "quota-history.jsonl"
+USAGE_LEDGER_FILE = CACHE_DIR / "usage-ledger.json"
+PRICES_FILE = CACHE_DIR / "prices.json"
 _MEM_DB_ENV = os.environ.get("MODULOR_MEMORY_DB", "").strip()
 MEMORY_DB = Path(_MEM_DB_ENV).expanduser() if _MEM_DB_ENV else None
 LOCK_RE = re.compile(r"/presence/([0-9a-f-]{36})\.lock$")
+CONV_ID_RE = re.compile(r'"conversationId"\s*:\s*"([0-9a-f-]{36})"')
+UUID_DIR_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 AUTH_RE = re.compile(r"applyAuthResult:\s*email=([^,\s]+),\s*authMethod=([^,\s]*)")
 TID_RE = re.compile(r"(?:^|\s)HC_TERMINAL_ID=(\S+)")
 MEM_TOOL_PREFIXES = ("memory_", "ontology_", "mcp_agentmemory_")
@@ -396,7 +401,9 @@ def parse_transcript_tail(cid, tid, now):
         "working_files": [],
         "active_skills": [],
         "artifacts": [],
+        "artifact_items": [],
         "mcp_queries": [],
+        "subagents": [],
         "inferred_cwd": None,
         "work_dir": None,
         "agent_busy": False,
@@ -422,6 +429,8 @@ def parse_transcript_tail(cid, tid, now):
     activations = []
     calls = []
     pending_idxs = []
+    subagents = []
+    subagent_by_call = {}
     files_map = {}
     skills_seen = {}
     artifacts_seen = {}
@@ -465,6 +474,12 @@ def parse_transcript_tail(cid, tid, now):
                     calls[idx]["state"] = "running"
                 else:
                     calls[idx]["state"] = "done"
+                if idx in subagent_by_call:
+                    sa = subagent_by_call[idx]
+                    sa["state"] = calls[idx]["state"]
+                    m_cid = CONV_ID_RE.search(str(d.get("content") or ""))
+                    if m_cid:
+                        sa["cid"] = m_cid.group(1)
             continue
 
         if typ == "PLANNER_RESPONSE":
@@ -496,8 +511,38 @@ def parse_transcript_tail(cid, tid, now):
                 "ts": ts_str,
             }
             calls.append(call_obj)
+            call_idx = len(calls) - 1
             if typ == "PLANNER_RESPONSE":
-                pending_idxs.append(len(calls) - 1)
+                pending_idxs.append(call_idx)
+
+            if name == "invoke_subagent":
+                sa_obj = {
+                    "kind": "subagent",
+                    "role": unquote_arg(args.get("Role")) or unquote_arg(args.get("TypeName")) or "subagent",
+                    "type_name": unquote_arg(args.get("TypeName")) or "",
+                    "model": unquote_arg(args.get("Model")) or "",
+                    "cid": None,
+                    "state": call_obj["state"],
+                    "age_sec": age,
+                    "steps": 0,
+                    "last_tool": None,
+                    "busy": call_obj["state"] == "running",
+                }
+                subagents.append(sa_obj)
+                subagent_by_call[call_idx] = sa_obj
+            elif name == "swarm" and unquote_arg(args.get("action")) == "add":
+                subagents.append({
+                    "kind": "swarm",
+                    "role": unquote_arg(args.get("name")) or "worker",
+                    "type_name": unquote_arg(args.get("workspace")) or "inherit",
+                    "model": unquote_arg(args.get("model")) or "",
+                    "cid": None,
+                    "state": call_obj["state"],
+                    "age_sec": age,
+                    "steps": 0,
+                    "last_tool": unquote_arg(args.get("brief"))[:42] or None,
+                    "busy": call_obj["state"] == "running",
+                })
 
             # Track artifacts, skills, and hot working files
             if fpath:
@@ -510,7 +555,9 @@ def parse_transcript_tail(cid, tid, now):
                 elif args.get("ArtifactMetadata") or ("/.gemini/antigravity-cli/brain/" in norm_p and ".system_generated" not in norm_p):
                     abn = os.path.basename(norm_p)
                     if abn:
-                        artifacts_seen[abn] = age
+                        prev_art = artifacts_seen.get(abn)
+                        if not prev_art or age <= prev_art[0]:
+                            artifacts_seen[abn] = (age, norm_p)
                 elif name in ("read_file", "view_file", "edit_file", "replace_file_content", "multi_replace_file_content", "write_file") and ".system_generated" not in norm_p:
                     op = "read" if name in ("read_file", "view_file") else ("write" if name == "write_file" else "edit")
                     ent = files_map.get(norm_p)
@@ -642,7 +689,9 @@ def parse_transcript_tail(cid, tid, now):
         key=lambda x: (x["age_sec"], -x["writes"], -x["ops"]),
     )[:8]
     active_skills = [k for k, _ in sorted(skills_seen.items(), key=lambda kv: kv[1])][:5]
-    artifacts = [k for k, _ in sorted(artifacts_seen.items(), key=lambda kv: kv[1])][:5]
+    sorted_arts = sorted(artifacts_seen.items(), key=lambda kv: kv[1][0])[:5]
+    artifacts = [k for k, _ in sorted_arts]
+    artifact_items = [{"name": k, "path": p, "age_sec": a} for k, (a, p) in sorted_arts]
     live_calls = list(reversed(calls[-10:]))
     agent_busy = any(c["state"] == "running" for c in live_calls)
 
@@ -657,11 +706,85 @@ def parse_transcript_tail(cid, tid, now):
     info["working_files"] = working_files
     info["active_skills"] = active_skills
     info["artifacts"] = artifacts
+    info["artifact_items"] = artifact_items
     info["mcp_queries"] = mcp_queries[-6:]
     info["inferred_cwd"] = inferred_cwd
     info["work_dir"] = work_dir
     info["agent_busy"] = agent_busy
+
+    dedup_sa = []
+    seen_sa_cids = set()
+    for sa in reversed(subagents):
+        scid = sa.get("cid")
+        if scid:
+            if scid in seen_sa_cids:
+                continue
+            seen_sa_cids.add(scid)
+            child = inspect_subagent_cid(scid, now)
+            if child:
+                sa.update(child)
+        dedup_sa.append(sa)
+        if len(dedup_sa) >= 8:
+            break
+    info["subagents"] = dedup_sa
     return info
+
+
+def inspect_subagent_cid(child_cid, now):
+    tp = AGY_HOME / "brain" / child_cid / ".system_generated" / "logs" / "transcript.jsonl"
+    if not tp.exists():
+        return None
+    try:
+        sz = tp.stat().st_size
+        with tp.open("rb") as f:
+            if sz > 98304:
+                f.seek(sz - 98304)
+                f.readline()
+            lines = f.read().decode("utf-8", "ignore").splitlines()
+    except OSError:
+        return None
+    steps = 0
+    model = None
+    last_ep = None
+    last_tool = None
+    pending = 0
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            d = json.loads(ln)
+        except Exception:
+            continue
+        steps += 1
+        if d.get("model"):
+            model = d.get("model")
+        ep = parse_iso_epoch(d.get("created_at"))
+        if ep:
+            last_ep = ep
+        typ = d.get("type") or ""
+        if typ == "GENERIC":
+            if pending > 0:
+                pending -= 1
+        elif typ == "PLANNER_RESPONSE":
+            tcs = d.get("tool_calls") or []
+            pending = len(tcs)
+            for tc in tcs:
+                if isinstance(tc, dict):
+                    _, badge, tgt, _, _ = classify_tool_call(tc.get("name") or "", tc.get("args") if isinstance(tc.get("args"), dict) else {})
+                    last_tool = f"{badge} {tgt}"[:48]
+    age = max(0, int(now - last_ep)) if last_ep else 0
+    busy = pending > 0 and age < 180
+    out = {
+        "steps": steps,
+        "age_sec": age,
+        "busy": busy,
+        "state": "running" if busy else "done",
+    }
+    if model:
+        out["model"] = model
+    if last_tool:
+        out["last_tool"] = last_tool
+    return out
 
 
 def read_terminal_cache(tid):
@@ -735,6 +858,445 @@ def normalize_accounts(active_emails, active_methods, now):
     elif not latest and normalized:
         latest = next(iter(normalized.keys()))
     return normalized, latest
+
+
+def detect_write_conflicts(terminals, now):
+    """Detect concurrent file edits or shared non-worktree checkout mutations across live terminals."""
+    home_s = str(HOME.resolve())
+    file_writers = {}
+    repo_writers = {}
+    for tid, tinfo in terminals.items():
+        tinfo["conflicts"] = []
+        has_recent_write = False
+        for wf in (tinfo.get("working_files") or []):
+            if (wf.get("writes") or 0) > 0 and (wf.get("age_sec") or 999999) < 900:
+                fp = wf.get("path")
+                if fp:
+                    file_writers.setdefault(fp, []).append((tid, wf.get("name") or os.path.basename(fp)))
+                if (wf.get("age_sec") or 999999) < 600:
+                    has_recent_write = True
+        icwd = tinfo.get("inferred_cwd")
+        if has_recent_write and icwd and icwd != home_s:
+            repo_writers.setdefault(icwd, []).append((tid, tinfo.get("work_dir") or os.path.basename(icwd)))
+
+    global_conflicts = []
+    for fp, writers in file_writers.items():
+        if len(writers) < 2:
+            continue
+        tids = [w[0] for w in writers]
+        fname = writers[0][1]
+        global_conflicts.append({"kind": "file", "target": fname, "path": fp, "terminals": tids})
+        for tid in tids:
+            peers = [x for x in tids if x != tid]
+            terminals[tid]["conflicts"].append({"kind": "file", "target": fname, "path": fp, "peers": peers})
+
+    for repo_path, writers in repo_writers.items():
+        if len(writers) < 2:
+            continue
+        tids = [w[0] for w in writers]
+        rname = writers[0][1]
+        global_conflicts.append({"kind": "repo", "target": rname, "path": repo_path, "terminals": tids})
+        for tid in tids:
+            peers = [x for x in tids if x != tid]
+            terminals[tid]["conflicts"].append({"kind": "repo", "target": rname, "path": repo_path, "peers": peers})
+
+    for tinfo in terminals.values():
+        tinfo["conflicts"] = tinfo["conflicts"][:4]
+    return global_conflicts[:8]
+
+
+DEFAULT_PRICES = {
+    "opus": {"in": 5.0, "cache": 0.5, "out": 25.0},
+    "sonnet": {"in": 3.0, "cache": 0.3, "out": 15.0},
+    "flash-lite": {"in": 0.10, "cache": 0.025, "out": 0.40},
+    "flash_lite": {"in": 0.10, "cache": 0.025, "out": 0.40},
+    "flash": {"in": 0.30, "cache": 0.075, "out": 2.50},
+    "default": {"in": 1.25, "cache": 0.31, "out": 10.0},
+}
+
+
+def load_prices():
+    if not PRICES_FILE.exists():
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = PRICES_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(DEFAULT_PRICES, indent=2) + "\n")
+            tmp.replace(PRICES_FILE)
+        except OSError:
+            pass
+        return DEFAULT_PRICES
+    try:
+        loaded = json.loads(PRICES_FILE.read_text())
+        if isinstance(loaded, dict):
+            return {**DEFAULT_PRICES, **loaded}
+    except Exception:
+        pass
+    return DEFAULT_PRICES
+
+
+def price_for_model(model_name, prices):
+    low = (model_name or "").lower()
+    for key in ("opus", "sonnet", "flash-lite", "flash_lite", "flash"):
+        if key in low and isinstance(prices.get(key), dict):
+            return prices[key]
+    return prices.get("default") or DEFAULT_PRICES["default"]
+
+
+def estimate_usd(model_name, in_tok, cache_tok, out_tok, prices):
+    p = price_for_model(model_name, prices)
+    return (
+        (in_tok * float(p.get("in", 1.25)))
+        + (cache_tok * float(p.get("cache", 0.31)))
+        + (out_tok * float(p.get("out", 10.0)))
+    ) / 1_000_000.0
+
+
+def update_usage_ledger(active_cids_meta, sums, prices, now):
+    ledger = {"version": 1, "cids": {}}
+    if USAGE_LEDGER_FILE.exists():
+        try:
+            loaded = json.loads(USAGE_LEDGER_FILE.read_text())
+            if isinstance(loaded, dict) and isinstance(loaded.get("cids"), dict):
+                ledger = loaded
+        except Exception:
+            pass
+
+    cids_map = ledger["cids"]
+    dirty = False
+    brain_dir = AGY_HOME / "brain"
+    candidates = dict(active_cids_meta)
+
+    cutoff_7d = now - 7 * 86400
+    recent_dirs = []
+    if brain_dir.is_dir():
+        try:
+            for ent in os.scandir(brain_dir):
+                if not ent.is_dir() or not UUID_DIR_RE.match(ent.name):
+                    continue
+                if ent.name in candidates:
+                    continue
+                tp = Path(ent.path) / ".system_generated" / "logs" / "transcript.jsonl"
+                try:
+                    st = tp.stat()
+                except OSError:
+                    continue
+                if st.st_mtime >= cutoff_7d:
+                    recent_dirs.append((st.st_mtime, ent.name, tp, st.st_size))
+        except OSError:
+            pass
+    recent_dirs.sort(reverse=True)
+    for _, rcid, _, _ in recent_dirs[:50]:
+        if rcid not in candidates:
+            candidates[rcid] = {"tid": None, "title": "", "model": None}
+
+    missing_titles = [c for c, m in candidates.items() if not m.get("title") and not (cids_map.get(c) or {}).get("title")]
+    extra_sums = summaries_for(set(missing_titles)) if missing_titles else {}
+
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    for cid, meta in candidates.items():
+        tp = brain_dir / cid / ".system_generated" / "logs" / "transcript.jsonl"
+        try:
+            st = tp.stat()
+        except OSError:
+            continue
+        ent = cids_map.get(cid)
+        if not isinstance(ent, dict) or st.st_size < int(ent.get("offset", 0)):
+            ent = {
+                "offset": 0,
+                "updated_at": 0,
+                "title": "",
+                "tid": "",
+                "model": "",
+                "in": 0,
+                "cache": 0,
+                "out": 0,
+                "by_day": {},
+            }
+            cids_map[cid] = ent
+            dirty = True
+
+        title = meta.get("title") or (sums.get(cid) or {}).get("title") or (extra_sums.get(cid) or {}).get("title") or ent.get("title") or ""
+        if title and title != ent.get("title"):
+            ent["title"] = title
+            dirty = True
+        if meta.get("tid") and meta["tid"] != ent.get("tid"):
+            ent["tid"] = meta["tid"]
+            dirty = True
+        if meta.get("model") and meta["model"] != ent.get("model"):
+            ent["model"] = meta["model"]
+            dirty = True
+
+        off = int(ent.get("offset", 0))
+        if st.st_size > off:
+            try:
+                with tp.open("rb") as f:
+                    f.seek(off)
+                    chunk = f.read()
+                nl = chunk.rfind(b"\n")
+                if nl >= 0:
+                    complete = chunk[: nl + 1]
+                    ent["offset"] = off + nl + 1
+                    ent["updated_at"] = int(now)
+                    dirty = True
+                    for raw_ln in complete.decode("utf-8", "ignore").splitlines():
+                        if not raw_ln.strip():
+                            continue
+                        try:
+                            d = json.loads(raw_ln)
+                        except Exception:
+                            continue
+                        mdl = d.get("model") or ent.get("model") or meta.get("model") or ""
+                        if mdl:
+                            ent["model"] = mdl
+                        in_t = d.get("input_tokens")
+                        ca_t = d.get("cache_read_tokens") or 0
+                        ou_t = d.get("output_tokens") or 0
+                        in_v = int(in_t) if isinstance(in_t, int) and in_t > 0 else 0
+                        ca_v = int(ca_t) if isinstance(ca_t, int) and ca_t > 0 else 0
+                        ou_v = int(ou_t) if isinstance(ou_t, int) and ou_t > 0 else 0
+                        if in_v == 0 and ca_v == 0 and ou_v == 0:
+                            continue
+                        ent["in"] = int(ent.get("in", 0)) + in_v
+                        ent["cache"] = int(ent.get("cache", 0)) + ca_v
+                        ent["out"] = int(ent.get("out", 0)) + ou_v
+                        ep = parse_iso_epoch(d.get("created_at"))
+                        day_str = datetime.datetime.fromtimestamp(ep or st.st_mtime, tz=local_tz).strftime("%Y-%m-%d")
+                        day_map = ent.setdefault("by_day", {})
+                        d_ent = day_map.setdefault(day_str, {"in": 0, "cache": 0, "out": 0, "by_model": {}})
+                        d_ent["in"] += in_v
+                        d_ent["cache"] += ca_v
+                        d_ent["out"] += ou_v
+                        m_key = mdl or "default"
+                        bm = d_ent.setdefault("by_model", {}).setdefault(m_key, [0, 0, 0])
+                        bm[0] += in_v
+                        bm[1] += ca_v
+                        bm[2] += ou_v
+            except OSError:
+                pass
+
+    cutoff_30d = now - 30 * 86400
+    stale_cids = [k for k, v in cids_map.items() if k not in candidates and (v.get("updated_at") or 0) < cutoff_30d]
+    for k in stale_cids:
+        del cids_map[k]
+        dirty = True
+
+    if dirty:
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = USAGE_LEDGER_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(ledger, ensure_ascii=False, separators=(",", ":")))
+            tmp.replace(USAGE_LEDGER_FILE)
+        except OSError:
+            pass
+
+    today_dt = datetime.datetime.fromtimestamp(now, tz=local_tz).date()
+    day_keys = [(today_dt - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+    today_key = day_keys[-1]
+    days_agg = {dk: {"date": dk, "in": 0, "cache": 0, "out": 0, "est_usd": 0.0, "sessions": set()} for dk in day_keys}
+
+    usage_by_cid = {}
+    session_rows = []
+    for cid, ent in cids_map.items():
+        total_usd = 0.0
+        last_day = ""
+        by_day = ent.get("by_day") or {}
+        for dk, dv in by_day.items():
+            if dk > last_day:
+                last_day = dk
+            d_usd = 0.0
+            bm = dv.get("by_model") or {}
+            if bm:
+                for mk_name, vals in bm.items():
+                    d_usd += estimate_usd(mk_name, vals[0], vals[1], vals[2], prices)
+            else:
+                d_usd = estimate_usd(ent.get("model"), dv.get("in", 0), dv.get("cache", 0), dv.get("out", 0), prices)
+            total_usd += d_usd
+            if dk in days_agg:
+                agg = days_agg[dk]
+                agg["in"] += dv.get("in", 0)
+                agg["cache"] += dv.get("cache", 0)
+                agg["out"] += dv.get("out", 0)
+                agg["est_usd"] += d_usd
+                agg["sessions"].add(cid)
+
+        usage_by_cid[cid] = {
+            "in": ent.get("in", 0),
+            "cache": ent.get("cache", 0),
+            "out": ent.get("out", 0),
+            "est_usd": round(total_usd, 3),
+        }
+        if cid in active_cids_meta or last_day in days_agg:
+            session_rows.append({
+                "cid": cid,
+                "tid": active_cids_meta.get(cid, {}).get("tid") or ent.get("tid") or cid[:6],
+                "live": cid in active_cids_meta,
+                "title": ent.get("title") or cid[:8],
+                "model": ent.get("model") or "",
+                "in": ent.get("in", 0),
+                "cache": ent.get("cache", 0),
+                "out": ent.get("out", 0),
+                "est_usd": round(total_usd, 3),
+                "date": last_day or today_key,
+                "updated_at": ent.get("updated_at", 0),
+            })
+
+    days_7 = []
+    total_7d_usd = 0.0
+    for dk in day_keys:
+        agg = days_agg[dk]
+        usd = round(agg["est_usd"], 2)
+        total_7d_usd += agg["est_usd"]
+        days_7.append({
+            "date": dk,
+            "in": agg["in"],
+            "cache": agg["cache"],
+            "out": agg["out"],
+            "est_usd": usd,
+            "sessions": len(agg["sessions"]),
+        })
+
+    session_rows.sort(key=lambda r: (1 if r["live"] else 0, r["date"], r["est_usd"]), reverse=True)
+    today_summary = days_7[-1]
+    return usage_by_cid, {
+        "today": today_summary,
+        "days_7": days_7,
+        "total_7d_usd": round(total_7d_usd, 2),
+        "prices_path": str(PRICES_FILE),
+        "top_sessions": session_rows[:12],
+    }
+
+
+def update_quota_history_and_forecast(accounts, now):
+    by_key = {}
+    total_lines = 0
+    pruned = False
+    cutoff = now - 7 * 86400
+    if QUOTA_HIST_FILE.exists():
+        try:
+            with QUOTA_HIST_FILE.open("r", encoding="utf-8", errors="ignore") as f:
+                for ln in f:
+                    total_lines += 1
+                    s = ln.strip()
+                    if not s:
+                        continue
+                    try:
+                        rec = json.loads(s)
+                    except Exception:
+                        pruned = True
+                        continue
+                    ts = rec.get("ts")
+                    if not isinstance(ts, (int, float)) or ts < cutoff:
+                        pruned = True
+                        continue
+                    em = rec.get("email")
+                    bk = rec.get("bucket")
+                    rem = rec.get("rem")
+                    if em and bk and isinstance(rem, (int, float)):
+                        by_key.setdefault((em, bk), []).append({
+                            "ts": int(ts),
+                            "email": em,
+                            "bucket": bk,
+                            "rem": float(rem),
+                            "reset_time": rec.get("reset_time"),
+                        })
+        except OSError:
+            pass
+
+    new_entries = []
+    now_i = int(now)
+    for email, acct in accounts.items():
+        quota = acct.get("quota")
+        if not isinstance(quota, dict):
+            continue
+        for bk, bv in quota.items():
+            if not isinstance(bv, dict):
+                continue
+            rem = bv.get("remaining_pct")
+            if not isinstance(rem, (int, float)):
+                continue
+            rem_f = round(float(rem), 1)
+            rt = bv.get("reset_time")
+            recs = by_key.setdefault((email, bk), [])
+            should_append = (
+                not recs
+                or abs(rem_f - recs[-1]["rem"]) >= 0.1
+                or rt != recs[-1].get("reset_time")
+                or (now_i - recs[-1]["ts"]) >= 300
+            )
+            if should_append:
+                entry = {"ts": now_i, "email": email, "bucket": bk, "rem": rem_f, "reset_time": rt}
+                recs.append(entry)
+                new_entries.append(entry)
+
+            if rt:
+                cycle = [r for r in recs if r.get("reset_time") == rt]
+            else:
+                cycle = []
+                for r in reversed(recs):
+                    if cycle and r["rem"] < cycle[-1]["rem"] - 10.0:
+                        break
+                    cycle.append(r)
+                cycle.reverse()
+            if not cycle:
+                cycle = [{"ts": now_i, "rem": rem_f}]
+
+            win_sec = 86400 if "weekly" in bk else 5400
+            slope_recs = [r for r in cycle if (now_i - r["ts"]) <= win_sec]
+            if len(slope_recs) < 2:
+                slope_recs = cycle
+
+            burn = None
+            if len(slope_recs) >= 2 and (slope_recs[-1]["ts"] - slope_recs[0]["ts"]) >= 60:
+                t0 = slope_recs[0]["ts"]
+                xs = [r["ts"] - t0 for r in slope_recs]
+                ys = [r["rem"] for r in slope_recs]
+                n = len(xs)
+                mx = sum(xs) / n
+                my = sum(ys) / n
+                denom = sum((x - mx) ** 2 for x in xs)
+                if denom > 0:
+                    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+                    burn = round(max(0.0, -slope * 3600.0), 2)
+                else:
+                    burn = 0.0
+
+            eta_sec = None
+            exhausts = False
+            if burn is not None and burn >= 0.05 and rem_f > 0:
+                eta_sec = int(round((rem_f / burn) * 3600.0))
+                rem_reset = bv.get("reset_in_sec")
+                if isinstance(rem_reset, (int, float)) and eta_sec < rem_reset:
+                    exhausts = True
+
+            if len(cycle) <= 16:
+                spark = [round(r["rem"], 1) for r in cycle]
+            else:
+                step = (len(cycle) - 1) / 15.0
+                spark = [round(cycle[int(round(i * step))]["rem"], 1) for i in range(16)]
+
+            bv["burn_pct_per_h"] = burn
+            bv["eta_empty_sec"] = eta_sec
+            bv["exhausts_before_reset"] = exhausts
+            bv["spark"] = spark
+
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if total_lines > 2500 or pruned:
+            all_recs = []
+            for recs in by_key.values():
+                all_recs.extend(recs)
+            all_recs.sort(key=lambda r: r["ts"])
+            tmp = QUOTA_HIST_FILE.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8") as f:
+                for r in all_recs:
+                    f.write(json.dumps(r, separators=(",", ":")) + "\n")
+            tmp.replace(QUOTA_HIST_FILE)
+        elif new_entries:
+            with QUOTA_HIST_FILE.open("a", encoding="utf-8") as f:
+                for r in new_entries:
+                    f.write(json.dumps(r, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
 
 
 def extract_ctx_keywords(tr, title):
@@ -1283,16 +1845,32 @@ def main():
             "working_files": tr.get("working_files") or [],
             "active_skills": tr.get("active_skills") or [],
             "artifacts": tr.get("artifacts") or [],
+            "artifact_items": tr.get("artifact_items") or [],
             "mcp_activations": tr.get("activations") or [],
             "ctx_keywords": keywords,
             "ctx_memories": ctx_entries,
             "ctx_graph": ctx_graph,
+            "subagents": tr.get("subagents") or [],
         }
+
+    active_cids_meta = {}
+    for tid, tinfo in terminals.items():
+        if tinfo.get("cid"):
+            active_cids_meta[tinfo["cid"]] = {"tid": tid, "title": tinfo.get("title") or "", "model": tinfo.get("model") or ""}
+
+    prices = load_prices()
+    usage_by_cid, usage_summary = update_usage_ledger(active_cids_meta, sums, prices, now)
+    for tinfo in terminals.values():
+        if tinfo.get("cid") and tinfo["cid"] in usage_by_cid:
+            tinfo["usage_total"] = usage_by_cid[tinfo["cid"]]
+
+    conflicts = detect_write_conflicts(terminals, now)
 
     if cache_dirty:
         save_ctx_cache(ctx_cache)
     all_activations.sort(key=lambda x: x.get("age_sec", 999999))
     accounts, latest_email = normalize_accounts(active_emails, active_methods, now)
+    update_quota_history_and_forecast(accounts, now)
     memory = read_memory_db(db, now)
     if not db and global_doc_entries:
         memory["entries"] = global_doc_entries[:8]
@@ -1313,7 +1891,9 @@ def main():
         "active_emails": sorted(set(active_emails)),
         "accounts": accounts,
         "terminals": terminals,
+        "conflicts": conflicts,
         "memory": memory,
+        "usage": usage_summary,
     }
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 

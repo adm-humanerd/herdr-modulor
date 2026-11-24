@@ -47,6 +47,22 @@ const clean = (s) =>
     .replace(/^\[ [!.] \] /, "")
     .trim();
 
+const BP_SHORTS = {
+  "quad-4": "Quad",
+  "quad-3p1": "3+1",
+  "triptych-3": "3-Col",
+  "unite-1p2": "Unité",
+  "hex-6": "6-Grid",
+};
+
+function defaultBoardLabel() {
+  const st = shared("modulor.blueprints");
+  const id = st?.defaultId || "quad-4";
+  const custom = (st?.custom ?? []).find((c) => c.id === id);
+  if (custom) return custom.short || custom.name?.slice(0, 8) || "Board";
+  return BP_SHORTS[id] || "Quad";
+}
+
 function agentCmdFromName(name) {
   if (!name) return null;
   const low = String(name).trim().toLowerCase();
@@ -56,7 +72,6 @@ function agentCmdFromName(name) {
   if (/gemini/.test(low)) return ["gemini"];
   if (/opencode/.test(low)) return ["opencode"];
   if (low === "pi") return ["pi"];
-  if (/^[a-z0-9][a-z0-9_-]*$/.test(low)) return [low];
   return null;
 }
 
@@ -72,7 +87,7 @@ function preferredAgentArgv(space, allPanes) {
     const argv = agentCmdFromName(p.program.name);
     if (argv) return argv;
   }
-  return null;
+  return ["agy"];
 }
 
 export default class ModulorStrip extends View {
@@ -342,14 +357,9 @@ export default class ModulorStrip extends View {
           .track_scroll(this.scroll)
           .children(cells),
       )
-      .child(
-        toolBtn(
-          "fs-new",
-          agentArgv ? `+ ${agentArgv[0]}` : "+ Agent",
-          () => run("tab.new", agentArgv ? { argv: agentArgv } : {}),
-          "Open a new agent tab",
-        ),
-      )
+      .child(toolBtn("fs-new", `+ ${agentArgv[0]}`, () => run("tab.new", { argv: agentArgv }), "New agent tab"))
+      .child(toolBtn("fs-planche", "Planche", () => run("modulor-bar.planche"), "Open Planche command desk (Cmd+Alt+P)"))
+      .child(toolBtn("fs-bp", "Blueprints", () => run("modulor-bar.blueprints"), "Open board blueprints (Cmd+Alt+B)"))
       .child(
         toolBtn(
           "fs-spaces",
@@ -404,12 +414,16 @@ export default class ModulorStrip extends View {
     const spaceAgents = space ? agents().filter((a) => a.space === space.id) : [];
     const hiddenAgents = activeTab ? spaceAgents.filter((a) => a.tab !== activeTab.id) : [];
     const agentArgv = preferredAgentArgv(space, allPanes);
+    const isBlankShellTab =
+      activeTabPanes.length === 1 && !activeTabPanes[0].program?.agent && !activeTabPanes[0].mod;
+    const boardLbl = defaultBoardLabel();
     const stop = (_e, cx) => cx.stop_propagation();
 
     const root = layout();
     const panel = findNode(root, "panel");
     const quotaNode = findNode(root, "sidebar-quota");
     const memNode = findNode(root, "deck-memory");
+    const swarmNode = findNode(root, "deck-swarm");
     const gitNode = findNode(root, "deck-git");
     const sidebar = findNode(root, "sidebar");
 
@@ -580,6 +594,89 @@ export default class ModulorStrip extends View {
             .child(`TILE ALL (${spaceAgents.length})`),
         ),
       )
+      .when(isBlankShellTab, (el) =>
+        el.child(
+          h_flex()
+            .id("ms-compose-here")
+            .h(24)
+            .px(8)
+            .flex_none()
+            .items_center()
+            .bg("#191816")
+            .text_color("#FAF8F4")
+            .font_family("Geist Mono")
+            .text_size(10)
+            .font_bold()
+            .cursor_pointer()
+            .tooltip(`Convert this blank shell into ${boardLbl} multi-agent grid`)
+            .hover((s) => s.bg(t.done))
+            .on_mouse_down("left", stop)
+            .on_click(() => run("modulor-bar.compose-here"))
+            .child(`Compose ${boardLbl}`),
+        ),
+      )
+      .child(
+        h_flex()
+          .id("ms-planche")
+          .h(24)
+          .px(7)
+          .flex_none()
+          .items_center()
+          .border(1)
+          .border_color(t.border)
+          .bg(t.surface)
+          .text_size(10.5)
+          .font_medium()
+          .text_color(t.foreground)
+          .cursor_pointer()
+          .tooltip("Open Planche Wall / Docs / Ports tab (Cmd+Alt+P)")
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", stop)
+          .on_click(() => run("modulor-bar.planche"))
+          .child("Planche"),
+      )
+      .child(
+        h_flex()
+          .id("ms-blueprints")
+          .h(24)
+          .px(7)
+          .flex_none()
+          .items_center()
+          .border(1)
+          .border_color(t.border)
+          .bg(t.surface)
+          .text_size(10.5)
+          .font_medium()
+          .text_color(t.foreground)
+          .cursor_pointer()
+          .tooltip("Board Blueprints & Save Current Grid (Cmd+Alt+B)")
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", stop)
+          .on_click(() => run("modulor-bar.blueprints"))
+          .child("Blueprints"),
+      )
+      .child(
+        h_flex()
+          .id("ms-new-board")
+          .h(24)
+          .px(8)
+          .gap(4)
+          .flex_none()
+          .items_center()
+          .border(1)
+          .border_color(t.foreground)
+          .bg("#191816")
+          .text_size(10.5)
+          .font_semibold()
+          .text_color("#FAF8F4")
+          .cursor_pointer()
+          .tooltip(`Open new ${boardLbl} multi-agent board (Cmd+Alt+N)`)
+          .hover((s) => s.bg(t.done).border_color(t.done))
+          .on_mouse_down("left", stop)
+          .on_click(() => run("modulor-bar.new-board"))
+          .child(svg("mods/modulor-bar/icons/plus.svg").size(10))
+          .child(boardLbl),
+      )
       .child(
         h_flex()
           .id("ms-split-agy")
@@ -595,15 +692,14 @@ export default class ModulorStrip extends View {
           .font_semibold()
           .text_color(t.foreground)
           .cursor_pointer()
-          .tooltip("Split a new panel directly into this board")
+          .tooltip("Split a new agent directly into this board")
           .hover((s) => s.bg(t.foreground).text_color(t.background))
           .on_mouse_down("left", stop)
           .on_click(() => {
-            const extra = agentArgv ? { argv: agentArgv } : {};
-            if (activeTabPanes.length === 0) run("tab.new", extra);
+            if (activeTabPanes.length === 0) run("tab.new", { argv: agentArgv });
             else {
               const dir = activeTabPanes.length % 2 === 1 ? "right" : "down";
-              run("pane.split", { direction: dir, ...extra });
+              run("pane.split", { direction: dir, argv: agentArgv });
             }
           })
           .child(svg("mods/modulor-bar/icons/plus.svg").size(10))
@@ -622,10 +718,10 @@ export default class ModulorStrip extends View {
           .text_size(10.5)
           .text_color(t.muted)
           .cursor_pointer()
-          .tooltip("Left-click: New tab · Right-click: All programs")
+          .tooltip(`Left-click: New ${agentArgv[0]} tab · Right-click: All programs`)
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", stop)
-          .on_click(() => run("tab.new", agentArgv ? { argv: agentArgv } : {}))
+          .on_click(() => run("tab.new", { argv: agentArgv }))
           .on_mouse_down("right", (_e, cx) => {
             cx.stop_propagation();
             openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 });
@@ -634,6 +730,7 @@ export default class ModulorStrip extends View {
       )
       .child(toggleBlockBtn("sidebar-quota", quotaNode, "Quota", false))
       .child(toggleBlockBtn("deck-memory", memNode, "Memory", true))
+      .when(Boolean(swarmNode), (el) => el.child(toggleBlockBtn("deck-swarm", swarmNode, "Swarm", true)))
       .child(toggleBlockBtn("deck-git", gitNode, "Git", true));
   }
 }

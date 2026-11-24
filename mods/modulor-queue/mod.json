@@ -1,3 +1,7 @@
 {
-  "place": "none"
+  "place": "none",
+  "overlay": {
+    "width": 310,
+    "height": 440
+  }
 }

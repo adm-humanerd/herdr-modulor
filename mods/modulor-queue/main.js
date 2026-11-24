@@ -15,6 +15,7 @@ import {
   window,
   checking,
   openOverlay,
+  closeOverlay,
   props,
 } from "herdr";
 
@@ -134,7 +135,10 @@ export default class ModulorQueue extends View {
         .bg(s.active ? t.selected : t.chrome)
         .cursor_pointer()
         .hover((el) => el.bg(s.active ? t.selected : t.hover))
-        .on_click(() => run("space.select", { id: s.id }))
+        .on_click(() => {
+          run("space.select", { id: s.id });
+          if (props()?.popup) closeOverlay(props().overlay);
+        })
         .on_mouse_down("right", (_e, cx) => {
           cx.stop_propagation();
           openOverlay({ mod: "menu", kind: "popup", width: 200, height: 220, props: { tab: "space", target: { id: s.id } } });
@@ -222,10 +226,11 @@ export default class ModulorQueue extends View {
   render() {
     const t = theme();
     const section = props()?.section;
+    const isPopup = Boolean(props()?.popup);
     if (section === "spaces") return this.renderSpaces(t);
 
     const w = window();
-    const collapsed = isNarrow();
+    const collapsed = isPopup ? false : isNarrow();
     const listRaw = agents();
     const allTerms = terminals();
     const telStore = shared(KEY_TELEMETRY) ?? {};
@@ -311,6 +316,13 @@ export default class ModulorQueue extends View {
       const ctxStr = fmtTok(info?.ctx_tokens);
       const dur = this.since(a) ? fmtDur(now - this.since(a)) : "";
       const rowTitle = info?.title || clean(a.title) || a.tab_name || sp.id;
+      const projTag = info?.work_dir || a.space_name || "~";
+      const appLow = (a.app || a.program?.key || "").toLowerCase();
+      const harnessTag =
+        appLow && !appLow.includes("antigravity") && appLow !== "agy"
+          ? appLow.replace(/-code$/, "").toUpperCase().slice(0, 6)
+          : "";
+      const hasConflict = (info?.conflicts?.length ?? 0) > 0;
 
       if (collapsed) {
         return [
@@ -359,7 +371,10 @@ export default class ModulorQueue extends View {
         )
         .cursor_pointer()
         .hover((s) => s.bg(a.focused ? "#191816" : t.hover))
-        .on_click(() => run("agent.focus", { terminal: a.address }))
+        .on_click(() => {
+          run("agent.focus", { terminal: a.address });
+          if (isPopup) closeOverlay(props().overlay);
+        })
         .child(
           v_flex()
             .gap(3)
@@ -389,12 +404,33 @@ export default class ModulorQueue extends View {
             )
             .child(
               h_flex()
-                .gap(6)
+                .gap(5)
                 .items_center()
                 .font_family("Geist Mono")
                 .text_size(10)
                 .text_color(a.focused ? "#C9C3B6" : t.dim)
-                .child(a.space_name || "~")
+                .when(hasConflict, (el) =>
+                  el.child(
+                    div()
+                      .px(3)
+                      .bg(t.blocked)
+                      .text_color("#FAF8F4")
+                      .text_size(8.5)
+                      .font_bold()
+                      .child("!CNF"),
+                  ),
+                )
+                .when(Boolean(harnessTag), (el) =>
+                  el.child(
+                    div()
+                      .px(3)
+                      .border(1)
+                      .border_color(a.focused ? "#4A4741" : t.border)
+                      .text_size(8.5)
+                      .child(harnessTag),
+                  ),
+                )
+                .child(div().truncate().max_w(95).child(projTag))
                 .when(Boolean(dur), (el) => el.child(`· ${dur}`))
                 .when(Boolean(ctxStr), (el) => el.child(`· ${ctxStr}`)),
             ),
@@ -438,13 +474,59 @@ export default class ModulorQueue extends View {
         h_flex()
           .h(36)
           .flex_none()
-          .pl(macLights ? (collapsed ? 10 : 78) : 10)
+          .pl(!isPopup && macLights ? (collapsed ? 10 : 78) : 10)
           .pr(8)
           .items_center()
           .justify_between()
           .border_b(1)
           .border_color(t.border)
-          .when(!collapsed, (el) =>
+          .when(isPopup, (el) =>
+            el
+              .bg(t.raised)
+              .child(div().text_size(11.5).font_semibold().text_color(t.foreground).child("MODULOR QUEUE"))
+              .child(
+                h_flex()
+                  .gap(6)
+                  .items_center()
+                  .child(
+                    div()
+                      .id("mq-pop-27")
+                      .px(5)
+                      .h(20)
+                      .flex()
+                      .items_center()
+                      .border(1)
+                      .border_color(t.border)
+                      .bg(t.surface)
+                      .font_family("Geist Mono")
+                      .text_size(10)
+                      .text_color(t.muted)
+                      .cursor_pointer()
+                      .tooltip("Switch to 27-inch layout (Cmd+Shift+0)")
+                      .hover((s) => s.bg(t.foreground).text_color(t.background))
+                      .on_click(() => {
+                        closeOverlay(props().overlay);
+                        run("layout.switch", { name: "modulor-27" });
+                      })
+                      .child("27\""),
+                  )
+                  .child(
+                    div()
+                      .id("mq-pop-close")
+                      .px(5)
+                      .h(20)
+                      .flex()
+                      .items_center()
+                      .cursor_pointer()
+                      .text_size(10.5)
+                      .text_color(t.muted)
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_click(() => closeOverlay(props().overlay))
+                      .child("ESC"),
+                  ),
+              ),
+          )
+          .when(!isPopup && !collapsed, (el) =>
             el
               .child(div().text_size(11.5).font_semibold().text_color(t.foreground).child("MODULOR"))
               .child(
@@ -532,6 +614,15 @@ export default class ModulorQueue extends View {
           )
           .children(queueRows),
       )
-      .when(!section && !collapsed, (el) => el.child(div().h(160).flex_none().border_t(1).border_color(t.border).child(this.renderSpaces(t))));
+      .when(!section && !collapsed, (el) =>
+        el.child(
+          div()
+            .h(isPopup ? 110 : 160)
+            .flex_none()
+            .border_t(1)
+            .border_color(t.border)
+            .child(this.renderSpaces(t)),
+        ),
+      );
   }
 }

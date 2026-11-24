@@ -10,6 +10,8 @@ import {
   run,
   openOverlay,
   closeOverlay,
+  exec,
+  notify,
   checking,
 } from "herdr";
 
@@ -102,6 +104,18 @@ function memBadge(kind, t) {
     .text_size(8.5)
     .font_semibold()
     .child(txt);
+}
+
+function openFilePath(fpath, machine, reveal, cx) {
+  if (!fpath || checking()) return;
+  if (machine && machine !== "__local__") {
+    cx?.write_to_clipboard?.(fpath);
+    notify({ title: "Remote path copied", body: fpath, level: "info" });
+    return;
+  }
+  exec("open", reveal ? ["-R", fpath] : [fpath]).catch(() => {
+    notify({ title: "Cannot open path", body: fpath, level: "warning" });
+  });
 }
 
 function secBar(title, rightText, t) {
@@ -377,7 +391,7 @@ export default class ModulorMemory extends View {
                       this.mode = "global";
                       cx.notify();
                     })
-                    .child("GLOBAL"),
+                    .child("GLOBAL DB"),
                 ),
             ),
         ]);
@@ -386,7 +400,11 @@ export default class ModulorMemory extends View {
     const calls = (term.live_calls ?? []).slice(0, 6);
     const files = (term.working_files ?? []).slice(0, 5);
     const skills = term.active_skills ?? [];
-    const artifacts = term.artifacts ?? [];
+    const artifactItems = (term.artifact_items && term.artifact_items.length > 0)
+      ? term.artifact_items
+      : (term.artifacts ?? []).map((a) => ({ name: a, path: null }));
+    const keywords = (term.ctx_keywords ?? []).slice(0, 8);
+    const machine = splitAddr(pane?.terminal || focused()?.terminal).machine;
     const ctxMems = (term.ctx_memories ?? []).slice(0, 5);
     const graph = term.ctx_graph ?? { nodes: [], edges: [] };
     const slots = mem.slots ?? [];
@@ -455,7 +473,7 @@ export default class ModulorMemory extends View {
               .child(term.title || "Active agent session"),
           ),
       )
-      .when(skills.length > 0 || artifacts.length > 0, (el) =>
+      .when(skills.length > 0 || artifactItems.length > 0 || keywords.length > 0, (el) =>
         el.child(
           h_flex()
             .px(10)
@@ -482,7 +500,7 @@ export default class ModulorMemory extends View {
               ),
             )
             .children(
-              artifacts.slice(0, 3).map((a, idx) =>
+              artifactItems.slice(0, 3).map((a, idx) =>
                 div()
                   .id(`mm-art-${idx}`)
                   .px(4)
@@ -495,7 +513,31 @@ export default class ModulorMemory extends View {
                   .text_color(t.foreground)
                   .font_family("Geist Mono")
                   .text_size(8.5)
-                  .child(a),
+                  .when(Boolean(a.path), (el) =>
+                    el
+                      .cursor_pointer()
+                      .tooltip(`${a.path}\nClick: open · Cmd+Click: reveal in Finder`)
+                      .hover((s) => s.bg(t.hover).border_color(t.foreground))
+                      .on_click((e, cx) => openFilePath(a.path, machine, Boolean(e?.modifiers?.platform), cx)),
+                  )
+                  .child(a.name),
+              ),
+            )
+            .children(
+              keywords.map((kw, idx) =>
+                div()
+                  .id(`mm-kw-${idx}`)
+                  .px(4)
+                  .h(15)
+                  .flex()
+                  .items_center()
+                  .bg(t.chrome)
+                  .border(1)
+                  .border_color(t.border)
+                  .text_color(t.muted)
+                  .font_family("Geist Mono")
+                  .text_size(8.5)
+                  .child(`#${kw}`),
               ),
             ),
         ),
@@ -590,7 +632,10 @@ export default class ModulorMemory extends View {
                 .justify_between()
                 .border_b(1)
                 .border_color(t.border)
-                .tooltip(wf.path)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover))
+                .tooltip(`${wf.path}\nClick: open · Cmd+Click: reveal in Finder`)
+                .on_click((e, cx) => openFilePath(wf.path, machine, Boolean(e?.modifiers?.platform), cx))
                 .child(
                   h_flex()
                     .flex_1()
@@ -664,7 +709,7 @@ export default class ModulorMemory extends View {
                 .py(6)
                 .text_size(10)
                 .text_color(t.dim)
-                .child("No matching workspace rules or docs."),
+                .child(mem?.mode === "sqlite" ? "No direct memory matches for current keywords." : "No matching workspace rules or docs."),
             ),
           )
           .children(

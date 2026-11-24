@@ -50,6 +50,27 @@ function folderShort(cwd) {
   return cwd.startsWith(h + "/") ? "~/" + cwd.slice(h.length + 1) : cwd;
 }
 
+function harnessTag(p) {
+  const raw = (p?.app || p?.program?.key || p?.program?.name || "").toLowerCase();
+  if (!raw) return "";
+  if (raw.includes("claude")) return "CLAUDE";
+  if (raw.includes("codex")) return "CODEX";
+  if (raw.includes("antigravity") || raw === "agy") return "AGY";
+  if (raw.includes("gemini")) return "GEMINI";
+  if (raw.includes("opencode")) return "OPENCODE";
+  if (raw === "pi") return "PI";
+  return "";
+}
+
+function modBadgeMeta(modName, t) {
+  const m = (modName || "").toLowerCase();
+  if (m === "modulor-planche") return ["PLANCHE", "#191816"];
+  if (m === "changes") return ["DIFF", t.working];
+  if (m === "files") return ["FILES", t.done];
+  if (m === "modulor-log") return ["LOGS", t.blocked];
+  return ["MOD", "#191816"];
+}
+
 function miniMeter(pct, focused, t) {
   if (typeof pct !== "number") return null;
   const filled = Math.max(1, Math.min(4, Math.ceil((pct / 100) * 4)));
@@ -99,6 +120,7 @@ export default class ModulorPane extends View {
     const multiAcct = Object.keys(tel?.accounts ?? {}).length > 1;
 
     const st = p.status;
+    const isModPane = !p.terminal && Boolean(p.mod);
     const isFocused = Boolean(p.focused);
 
     let bg = "#EFECE4";
@@ -121,7 +143,7 @@ export default class ModulorPane extends View {
       borderCol = "#B9CCE0";
       fg = t.foreground;
       subFg = t.muted;
-    } else if (st === "working") {
+    } else if (st === "working" || isModPane) {
       bg = t.chrome;
       borderCol = t.border;
       fg = t.foreground;
@@ -129,8 +151,29 @@ export default class ModulorPane extends View {
     }
 
     const rawTitle = info?.title || cleanTitle(p.title);
-    const label = rawTitle || folderShort(p.cwd) || p.program?.name || sp.id || "shell";
+    const label = isModPane
+      ? p.name || rawTitle || p.mod
+      : rawTitle || folderShort(p.cwd) || p.program?.name || sp.id || "shell";
+    const hTag = isModPane ? "" : harnessTag(p);
+    const heterogeneous = new Set(tabPanes.map((x) => harnessTag(x)).filter(Boolean)).size > 1;
+    const rawCwdName =
+      p.cwd && p.cwd !== home() ? p.cwd.replace(/\/+$/, "").split("/").pop() : "";
+    const projLabel = !isModPane ? (info?.work_dir || rawCwdName || "") : "";
+    const projShort = projLabel.length > 16 ? projLabel.slice(0, 15) + "…" : projLabel;
+    const projTip = p.branch ? `${projLabel} (${p.branch})` : projLabel;
+    const conflicts = info?.conflicts ?? [];
+    const conflictTip = conflicts
+      .map((c) => `⚠ ${c.kind === "file" ? "File" : "Repo"} collision on ${c.target} with ${c.peers.join(", ")}`)
+      .join("\n");
     const modelStr = shortModel(info?.model);
+    const displayModel = modelStr
+      ? (heterogeneous && hTag ? `${hTag} · ${modelStr}` : modelStr)
+      : (hTag && hTag !== "AGY" ? hTag : (heterogeneous && hTag ? hTag : ""));
+    const mcpActs = info?.mcp_activations ?? [];
+    const recentMcp = mcpActs.filter((a) => (a.age_sec ?? 9999) < 180);
+    const mcpTip = mcpActs.length > 0
+      ? mcpActs.slice(0, 3).map((a) => `${a.tool}${a.target ? `: ${a.target}` : ""}`).join("\n")
+      : "";
     const ctxStr = fmtTok(info?.ctx_tokens);
     const outStr = fmtTok(info?.out_tokens);
     const pct = info?.ctx_pct;
@@ -173,7 +216,24 @@ export default class ModulorPane extends View {
           .text_color(isFocused ? "#FAF8F4" : t.foreground)
           .child(String(paneNum)),
       )
-      .when(st === "blocked", (el) =>
+      .when(isModPane, (el) => {
+        const [mbTxt, mbBg] = modBadgeMeta(p.mod, t);
+        return el.child(
+          div()
+            .flex_none()
+            .px(5)
+            .h(18)
+            .flex()
+            .items_center()
+            .bg(isFocused ? "#302E2A" : mbBg)
+            .text_color("#FAF8F4")
+            .font_family("Geist Mono")
+            .text_size(9.5)
+            .font_bold()
+            .child(mbTxt),
+        );
+      })
+      .when(!isModPane && st === "blocked", (el) =>
         el.child(
           div()
             .flex_none()
@@ -190,7 +250,7 @@ export default class ModulorPane extends View {
             .child("REVIEW"),
         ),
       )
-      .when(st === "done", (el) =>
+      .when(!isModPane && st === "done", (el) =>
         el.child(
           div()
             .flex_none()
@@ -206,7 +266,7 @@ export default class ModulorPane extends View {
             .child("UNREAD"),
         ),
       )
-      .when(st === "working", (el) =>
+      .when(!isModPane && st === "working", (el) =>
         el.child(
           div()
             .flex_none()
@@ -222,7 +282,7 @@ export default class ModulorPane extends View {
             .child("WORK"),
         ),
       )
-      .when(st === "idle" || !st, (el) =>
+      .when(!isModPane && (st === "idle" || !st), (el) =>
         el.child(
           div()
             .flex_none()
@@ -238,6 +298,25 @@ export default class ModulorPane extends View {
             .child("IDLE"),
         ),
       )
+      .when(conflicts.length > 0, (el) =>
+        el.child(
+          div()
+            .id(`pane-cnf-${paneId}`)
+            .flex_none()
+            .px(4)
+            .h(16)
+            .flex()
+            .items_center()
+            .bg(t.blocked)
+            .text_color("#FAF8F4")
+            .font_family("Geist Mono")
+            .text_size(9)
+            .font_bold()
+            .loop("opacity", { from: 0.55, to: 1, period: 1200 })
+            .tooltip(conflictTip)
+            .child("CONFLICT"),
+        ),
+      )
       .child(
         div()
           .flex_1()
@@ -246,6 +325,25 @@ export default class ModulorPane extends View {
           .font_medium()
           .text_color(fg)
           .child(label),
+      )
+      .when(Boolean(projShort), (el) =>
+        el.child(
+          div()
+            .id(`pane-proj-${paneId}`)
+            .flex_none()
+            .px(4)
+            .h(16)
+            .flex()
+            .items_center()
+            .bg(isFocused ? "#2D2A26" : t.raised)
+            .border(1)
+            .border_color(isFocused ? "#4A4741" : t.border)
+            .font_family("Geist Mono")
+            .text_size(9.5)
+            .text_color(isFocused ? "#E8E2D5" : t.foreground)
+            .tooltip(projTip)
+            .child(projShort),
+        ),
       )
       .when(multiAcct && Boolean(info?.email), (el) =>
         el.child(
@@ -263,13 +361,33 @@ export default class ModulorPane extends View {
             .child(info.email.split("@")[0]),
         ),
       )
-      .when(Boolean(modelStr), (el) =>
+      .when(mcpActs.length > 0, (el) =>
+        el.child(
+          div()
+            .id(`pane-mcp-${paneId}`)
+            .flex_none()
+            .px(4)
+            .h(16)
+            .flex()
+            .items_center()
+            .bg(recentMcp.length > 0 ? t.done : isFocused ? "#302E2A" : t.raised)
+            .border(1)
+            .border_color(recentMcp.length > 0 ? t.done : isFocused ? "#4A4741" : t.border)
+            .font_family("Geist Mono")
+            .text_size(9.5)
+            .font_semibold()
+            .text_color(recentMcp.length > 0 || isFocused ? "#FAF8F4" : t.muted)
+            .when(Boolean(mcpTip), (x) => x.tooltip(mcpTip))
+            .child(`MEM ${mcpActs.length}`),
+        ),
+      )
+      .when(Boolean(displayModel), (el) =>
         el.child(
           div()
             .flex_none()
             .text_size(10.5)
             .text_color(subFg)
-            .child(modelStr),
+            .child(displayModel),
         ),
       )
       .when(Boolean(ctxStr), (el) =>

@@ -1,7 +1,16 @@
 {
   "global": {
-    "cmd-shift-m": "layout.toggle:panel",
     "cmd-shift-0": "layout.switch:modulor-27",
-    "cmd-shift-9": "layout.switch:modulor-13"
+    "cmd-shift-9": "layout.switch:modulor-13",
+    "cmd-shift-m": "layout.toggle:panel",
+    "cmd-alt-b": "modulor-bar.blueprints",
+    "cmd-alt-n": "modulor-bar.new-board",
+    "cmd-alt-p": "modulor-bar.planche",
+    "cmd-alt-r": "modulor-bar.next-review",
+    "cmd-alt-q": "modulor-bar.quota",
+    "cmd-alt-a": "modulor-bar.queue",
+    "cmd-alt-e": "modulor-bar.memory",
+    "cmd-alt-c": "modulor-bar.cost",
+    "cmd-alt-l": "modulor-bar.logs"
   }
 }

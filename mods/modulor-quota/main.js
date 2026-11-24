@@ -80,6 +80,34 @@ function barColor(remPct, t) {
   return t.foreground;
 }
 
+function fmtForecast(bv, bk) {
+  const sp = bv?.spark;
+  const burn = bv?.burn_pct_per_h;
+  if (typeof burn !== "number" || !Array.isArray(sp) || sp.length < 2) return ["collecting trend…", false];
+  if (burn < 0.05) return ["stable · 0%/h", false];
+  if (bv.exhausts_before_reset && typeof bv.eta_empty_sec === "number") {
+    const isWeekly = String(bk || "").includes("weekly");
+    const warn = !isWeekly || bv.eta_empty_sec <= 36 * 3600;
+    return [`-${burn.toFixed(1)}%/h · 0% in ${fmtLeft(bv.eta_empty_sec)}`, warn];
+  }
+  return [`-${burn.toFixed(1)}%/h · >reset`, false];
+}
+
+function sparkBars(spark, col, t) {
+  const arr = Array.isArray(spark) ? spark : [];
+  if (arr.length < 2) return null;
+  return h_flex()
+    .gap(1)
+    .h(10)
+    .items_end()
+    .children(
+      arr.slice(-16).map((v) => {
+        const h = Math.max(2, Math.min(10, Math.round(((v ?? 0) / 100) * 10)));
+        return div().w(2.5).h(h).bg(col || t.muted);
+      }),
+    );
+}
+
 export default class ModulorQuota extends View {
   init() {
     if (checking()) return;
@@ -168,7 +196,7 @@ export default class ModulorQuota extends View {
                 .border_color(t.border)
                 .text_size(11)
                 .text_color(t.dim)
-                .child("Waiting for agent telemetry..."),
+                .child("Detecting Antigravity account..."),
             ),
           )
           .children(
@@ -219,7 +247,7 @@ export default class ModulorQuota extends View {
                       .py(7)
                       .text_size(10.5)
                       .text_color(t.dim)
-                      .child("Account verified · awaiting next status tick"),
+                      .child("Account verified · awaiting next agy status tick"),
                   ),
                 )
                 .when(qEntries.length > 0, (el) =>
@@ -232,6 +260,8 @@ export default class ModulorQuota extends View {
                         qEntries.map(([bk, bv]) => {
                           const rem = bv.remaining_pct ?? 0;
                           const col = barColor(rem, t);
+                          const [fcText, fcWarn] = fmtForecast(bv, bk);
+                          const spEl = sparkBars(bv.spark, col, t);
                           return v_flex()
                             .gap(2)
                             .child(
@@ -266,6 +296,19 @@ export default class ModulorQuota extends View {
                                 .h(4)
                                 .bg(t.raised)
                                 .child(div().w(`${Math.max(0, Math.min(100, rem))}%`).h_full().bg(col)),
+                            )
+                            .child(
+                              h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                  div()
+                                    .font_family("Geist Mono")
+                                    .text_size(9)
+                                    .text_color(fcWarn ? t.blocked : t.dim)
+                                    .child(fcText),
+                                )
+                                .when(Boolean(spEl), (el) => el.child(spEl)),
                             );
                         }),
                       ),

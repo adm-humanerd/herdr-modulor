@@ -17,9 +17,16 @@ import {
   checking,
   props,
   run,
+  notify,
+  playSound,
+  setWindowTitle,
+  nextCommand,
 } from "herdr";
+import { evaluateAlerts } from "./alerts.js";
+import { resolvePreset, spawnBlueprint } from "./spawner.js";
 
 const KEY_TELEMETRY = "modulor.telemetry";
+const KEY_ALERTS = "modulor.alerts";
 const POLL_MS = 2200;
 const REMOTE_EVERY_TICKS = 4;
 
@@ -92,6 +99,34 @@ function bucketLabel(key) {
   return map[key] ?? key.toUpperCase();
 }
 
+function fmtForecast(bv, bk) {
+  const sp = bv?.spark;
+  const burn = bv?.burn_pct_per_h;
+  if (typeof burn !== "number" || !Array.isArray(sp) || sp.length < 2) return ["collecting trend…", false];
+  if (burn < 0.05) return ["stable · 0%/h", false];
+  if (bv.exhausts_before_reset && typeof bv.eta_empty_sec === "number") {
+    const isWeekly = String(bk || "").includes("weekly");
+    const warn = !isWeekly || bv.eta_empty_sec <= 36 * 3600;
+    return [`-${burn.toFixed(1)}%/h · 0% in ${fmtLeft(bv.eta_empty_sec)}`, warn];
+  }
+  return [`-${burn.toFixed(1)}%/h · outlasts reset`, false];
+}
+
+function sparkBars(spark, col, t) {
+  const arr = Array.isArray(spark) ? spark : [];
+  if (arr.length < 2) return null;
+  return h_flex()
+    .gap(1)
+    .h(10)
+    .items_end()
+    .children(
+      arr.slice(-16).map((v) => {
+        const h = Math.max(2, Math.min(10, Math.round(((v ?? 0) / 100) * 10)));
+        return div().w(3).h(h).bg(col || t.muted);
+      }),
+    );
+}
+
 export default class ModulorBar extends View {
   init(_props, cx) {
     if (checking()) return;
@@ -99,6 +134,8 @@ export default class ModulorBar extends View {
     this.probeSrc = null;
     this.lastSig = {};
     this.lastPushAt = {};
+    this.lastWinTitle = null;
+    this.spawning = false;
     this.tick = 0;
 
     cx.spawn(async (cx) => {
@@ -110,6 +147,137 @@ export default class ModulorBar extends View {
         await cx.sleep(POLL_MS);
       }
     });
+
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const cmd = await nextCommand();
+        this.handleCommand(cmd, cx);
+        cx.notify();
+      }
+    });
+  }
+
+  handleCommand(cmd, cx) {
+    if (!cmd) return;
+    if (cmd === "test-alert") {
+      notify({
+        title: "Modulor Alert Ready",
+        body: "Quota, context & stale probe alerts are active",
+        level: "info",
+      });
+      return;
+    }
+    if (cmd === "next-review") {
+      const list = agents();
+      const urgent = [
+        ...list.filter((a) => a.status === "blocked").sort((a, b) => a.seq - b.seq),
+        ...list.filter((a) => a.status === "done").sort((a, b) => b.seq - a.seq),
+      ];
+      if (urgent.length === 0) {
+        run("agent.next");
+        return;
+      }
+      const curIdx = urgent.findIndex((a) => a.focused);
+      const next = curIdx >= 0 && urgent.length > 1 ? urgent[(curIdx + 1) % urgent.length] : urgent[0];
+      run("agent.focus", { terminal: next.address });
+      return;
+    }
+    if (cmd === "quota") {
+      openOverlay({ mod: "modulor-bar", kind: "popup", width: 460, height: 380, props: { popup: "quota" } });
+      return;
+    }
+    if (cmd === "memory") {
+      openOverlay({ mod: "modulor-memory", kind: "popup", width: 380, height: 520, props: { popup: true } });
+      return;
+    }
+    if (cmd === "queue") {
+      openOverlay({ mod: "modulor-queue", kind: "dialog", width: 320, height: 460, props: { popup: true } });
+      return;
+    }
+    if (cmd === "cost") {
+      openOverlay({ mod: "modulor-cost", kind: "dialog", width: 520, height: 440, props: { popup: true } });
+      return;
+    }
+    if (cmd === "blueprints") {
+      openOverlay({ mod: "modulor-blueprint", kind: "dialog", width: 620, height: 520 });
+      return;
+    }
+    if (cmd === "planche") {
+      const activeSp = spaces().find((s) => s.active);
+      const tabIds = new Set((activeSp?.tabs ?? []).map((tb) => tb.id));
+      const pPane = panes().find((p) => tabIds.has(p.tab) && p.mod === "modulor-planche");
+      if (pPane) {
+        run("tab.select", { id: pPane.tab });
+      } else {
+        run("tab.new", { name: "Planche", mod: "modulor-planche" });
+      }
+      return;
+    }
+    if (cmd === "new-board" || cmd === "compose-here" || cmd === "launch-blueprint") {
+      if (this.spawning || !cx) return;
+      const bpStore = shared("modulor.blueprints") ?? {};
+      let spec = null;
+      let worktreeIsolate = Boolean(bpStore.worktreeIsolate);
+      let inPlace = cmd === "compose-here";
+      if (cmd === "launch-blueprint") {
+        const req = shared("modulor.launchRequest");
+        if (req?.blueprint) {
+          spec = req.blueprint;
+          worktreeIsolate = Boolean(req.worktreeIsolate);
+          inPlace = Boolean(req.inPlace);
+        }
+      }
+      if (!spec) {
+        spec = resolvePreset(bpStore.defaultId || "quad-4", bpStore);
+      }
+      this.spawning = true;
+      cx.spawn(async (cx) => {
+        try {
+          await spawnBlueprint(spec, { worktreeIsolate, inPlace }, cx);
+        } finally {
+          this.spawning = false;
+          cx.notify();
+        }
+      });
+      return;
+    }
+    if (cmd === "logs") {
+      const existing = shared("modulor.logOverlayId");
+      if (existing) {
+        closeOverlay(existing);
+        setShared("modulor.logOverlayId", null);
+      } else {
+        const oid = openOverlay({ mod: "modulor-log", kind: "window", key: "modulor-log", keep: true, width: 580, height: 380 });
+        setShared("modulor.logOverlayId", oid);
+      }
+      return;
+    }
+    if (cmd === "logs-close") {
+      const existing = shared("modulor.logOverlayId");
+      if (existing) {
+        closeOverlay(existing);
+        setShared("modulor.logOverlayId", null);
+      }
+      return;
+    }
+  }
+
+  checkAlerts(store) {
+    if (checking()) return;
+    const prev = shared(KEY_ALERTS);
+    const { fired, next } = evaluateAlerts(store, prev, Date.now());
+    if (JSON.stringify(prev ?? null) !== JSON.stringify(next)) {
+      setShared(KEY_ALERTS, next);
+    }
+    for (const a of fired) {
+      notify({
+        title: a.title,
+        body: a.body,
+        level: a.level,
+        action: a.action,
+      });
+      if (a.sound) playSound(a.sound);
+    }
   }
 
   async pollMachine(machine) {
@@ -156,6 +324,7 @@ export default class ModulorBar extends View {
       }
     }
     if (changed) setShared(KEY_TELEMETRY, current);
+    this.checkAlerts(current);
   }
 
   renderQuotaPopup(t) {
@@ -190,7 +359,7 @@ export default class ModulorBar extends View {
           .bg(t.chrome)
           .border_b(1)
           .border_color(t.border)
-          .child(div().text_size(12).font_semibold().child("Agent Account Quotas"))
+          .child(div().text_size(12).font_semibold().child("Antigravity Account Quotas"))
           .child(
             div()
               .id("q-close")
@@ -220,7 +389,7 @@ export default class ModulorBar extends View {
                 .border_color(t.border)
                 .text_size(12)
                 .text_color(t.muted)
-                .child("No active quota telemetry detected on this machine yet."),
+                .child("No active Antigravity session detected on this machine yet."),
             ),
           )
           .children(
@@ -277,7 +446,7 @@ export default class ModulorBar extends View {
                       .p(10)
                       .text_size(11.5)
                       .text_color(t.muted)
-                      .child("Account verified from session auth log. Quota buckets populate on the next turn."),
+                      .child("Account verified from session auth log. Quota buckets populate on the next agy turn."),
                   ),
                 )
                 .when(qEntries.length > 0, (el) =>
@@ -289,6 +458,8 @@ export default class ModulorBar extends View {
                         qEntries.map(([bk, bv]) => {
                           const rem = bv.remaining_pct ?? 0;
                           const col = meterColor(rem, t);
+                          const [fcText, fcWarn] = fmtForecast(bv, bk);
+                          const spEl = sparkBars(bv.spark, col, t);
                           return v_flex()
                             .gap(3)
                             .child(
@@ -323,6 +494,19 @@ export default class ModulorBar extends View {
                                 .h(5)
                                 .bg(t.raised)
                                 .child(div().w(`${Math.max(0, Math.min(100, rem))}%`).h_full().bg(col)),
+                            )
+                            .child(
+                              h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                  div()
+                                    .font_family("Geist Mono")
+                                    .text_size(9.5)
+                                    .text_color(fcWarn ? t.blocked : t.dim)
+                                    .child(fcText),
+                                )
+                                .when(Boolean(spEl), (el) => el.child(spEl)),
                             );
                         }),
                       ),
@@ -370,15 +554,33 @@ export default class ModulorBar extends View {
     const agList = agents();
     const blockedCount = agList.filter((a) => a.status === "blocked").length;
     const doneCount = agList.filter((a) => a.status === "done").length;
+    const workingCount = agList.filter((a) => a.status === "working").length;
+
+    if (!checking()) {
+      const titleParts = ["MODULOR"];
+      if (blockedCount > 0) titleParts.push(`REV ${blockedCount}`);
+      if (doneCount > 0) titleParts.push(`NEW ${doneCount}`);
+      else if (workingCount > 0 && blockedCount === 0) titleParts.push(`WRK ${workingCount}`);
+      if (g5 && typeof g5.remaining_pct === "number") titleParts.push(`G5H ${Math.round(g5.remaining_pct)}%`);
+      if (c5 && typeof c5.remaining_pct === "number") titleParts.push(`3P ${Math.round(c5.remaining_pct)}%`);
+      if (activeSpace?.name) titleParts.push(activeSpace.name);
+      const nextTitle = titleParts.join(" · ");
+      if (nextTitle !== this.lastWinTitle) {
+        this.lastWinTitle = nextTitle;
+        setWindowTitle(nextTitle);
+      }
+    }
 
     const panelNode = findNode(layout(), "panel");
     const showMemPill = compact || !panelNode || panelNode.hidden;
     const topAct = (tel.memory?.activations ?? [])[0];
+    const todayUsd = tel.usage?.today?.est_usd;
+    const logSources = Array.isArray(shared("modulor.logs")) ? shared("modulor.logs").length : 0;
     const acctTag = focusEmail
       ? acctCount > 1
         ? `${focusEmail.split("@")[0]} (${acctCount})`
         : focusEmail.split("@")[0]
-      : "QUOTA";
+      : "agy";
 
     return h_flex()
       .id("modulor-bar")
@@ -391,6 +593,37 @@ export default class ModulorBar extends View {
       .border_color(t.border)
       .text_size(11.5)
       .text_color(t.muted)
+      .when(compact, (el) => {
+        const urgent = blockedCount + doneCount;
+        return el.child(
+          div()
+            .id("bar-queue")
+            .px(6)
+            .h(18)
+            .flex()
+            .items_center()
+            .bg(urgent > 0 ? t.blocked : t.raised)
+            .border(1)
+            .border_color(urgent > 0 ? t.blocked : t.border)
+            .text_color(urgent > 0 ? "#FAF8F4" : t.foreground)
+            .font_family("Geist Mono")
+            .text_size(10)
+            .font_semibold()
+            .cursor_pointer()
+            .tooltip("Open Review Queue & Spaces (Cmd+Alt+A)")
+            .hover((s) => s.bg(urgent > 0 ? t.blocked : t.hover))
+            .on_click(() =>
+              openOverlay({
+                mod: "modulor-queue",
+                kind: "dialog",
+                width: 320,
+                height: 460,
+                props: { popup: true },
+              }),
+            )
+            .child(urgent > 0 ? `QUEUE · ${urgent}!` : `QUEUE ${agList.length}`),
+        );
+      })
       .child(
         h_flex()
           .id("bar-quota")
@@ -400,7 +633,7 @@ export default class ModulorBar extends View {
           .px(4)
           .h(22)
           .hover((s) => s.bg(t.hover))
-          .tooltip("Click for full multi-account quota ledger")
+          .tooltip("Click for full multi-account Antigravity quota ledger")
           .on_click(() =>
             openOverlay({
               mod: "modulor-bar",
@@ -575,6 +808,73 @@ export default class ModulorBar extends View {
           .text_size(11)
           .text_color(t.foreground)
           .child(`CTX ${fmtTok(totalCtx)} · OUT ${fmtTok(totalOut)}`),
+      )
+      .when(typeof todayUsd === "number", (el) =>
+        el.child(
+          div()
+            .id("bar-cost")
+            .px(6)
+            .h(18)
+            .flex()
+            .items_center()
+            .bg(t.raised)
+            .border(1)
+            .border_color(t.border)
+            .font_family("Geist Mono")
+            .text_size(10)
+            .font_semibold()
+            .text_color(t.foreground)
+            .cursor_pointer()
+            .tooltip("Today's API-equivalent usage (Ultra included) · Click or Cmd+Alt+C for 7d ledger")
+            .hover((s) => s.bg(t.hover))
+            .on_click(() =>
+              openOverlay({
+                mod: "modulor-cost",
+                kind: "dialog",
+                width: 520,
+                height: 440,
+                props: { popup: true },
+              }),
+            )
+            .child(`≈$${todayUsd.toFixed(todayUsd >= 100 ? 0 : 2)}`),
+        ),
+      )
+      .when(!compact || logSources > 0, (el) =>
+        el.child(
+          div()
+            .id("bar-logs")
+            .px(5)
+            .h(18)
+            .flex()
+            .items_center()
+            .bg(logSources > 0 ? t.surface : t.chrome)
+            .border(1)
+            .border_color(t.border)
+            .font_family("Geist Mono")
+            .text_size(9.5)
+            .text_color(logSources > 0 ? t.foreground : t.dim)
+            .cursor_pointer()
+            .tooltip("Open Log Watcher window (Cmd+Alt+L)")
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_click(() => {
+              const existing = shared("modulor.logOverlayId");
+              if (existing) {
+                closeOverlay(existing);
+                setShared("modulor.logOverlayId", null);
+              } else {
+                const oid = openOverlay({
+                  mod: "modulor-log",
+                  kind: "window",
+                  key: "modulor-log",
+                  keep: true,
+                  width: 580,
+                  height: 380,
+                });
+                setShared("modulor.logOverlayId", oid);
+              }
+            })
+            .child(logSources > 0 ? `LOG ${logSources}` : "LOG"),
+        ),
       )
       .child(
         div()
